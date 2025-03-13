@@ -1,100 +1,76 @@
 from typing import Dict, Any, Optional, List
 import os
+import logging
+from functools import lru_cache
+import json
+
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
-from langchain.chat_models import ChatOpenAI
-import json
+
+# 修改导入以使用项目的LLM工厂函数
+from proposal.core.llm import get_chat_llm_instance
+
+# 导入提示词模板
+from prompts.proposal_prompts import (
+    ANALYSIS_TEMPLATE,
+    VOTE_TEMPLATE,
+    COMMENT_TEMPLATE
+)
+
+logger = logging.getLogger(__name__)
 
 class ProposalAnalyzer:
     """提案分析器：分析提案内容并提供投票和评论决策支持"""
     
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        """
-        初始化提案分析器
-        
-        Args:
-            config: 配置字典，包含模型设置、API密钥等
-        """
+        """初始化提案分析器"""
         self.config = config or {}
         self._initialize_llm()
+        self._proposal_cache = {}
         
-    def _initialize_llm(self):
+    def _initialize_llm(self) -> None:
         """初始化LLM组件和提示模板"""
-        # 配置LLM
-        model_name = self.config.get("model_name", "gpt-3.5-turbo")
-        temperature = self.config.get("temperature", 0.0)
-        api_key = self.config.get("api_key", os.getenv("OPENAI_API_KEY"))
+        # 配置参数
+        analysis_config = self.config.get("analysis", {})
+        vote_config = self.config.get("vote", {})
+        comment_config = self.config.get("comment", {})
         
-        self.llm = ChatOpenAI(
-            model_name=model_name,
-            temperature=temperature,
-            openai_api_key=api_key
+        # 使用工厂函数创建LLM实例
+        self.analysis_llm = get_chat_llm_instance(
+            model_name=analysis_config.get("model_name"),
+            temperature=analysis_config.get("temperature", 0.0)
         )
         
-        # 创建提案分析提示模板
+        self.vote_llm = get_chat_llm_instance(
+            model_name=vote_config.get("model_name"),
+            temperature=vote_config.get("temperature", 0.0)
+        )
+        
+        self.comment_llm = get_chat_llm_instance(
+            model_name=comment_config.get("model_name"),
+            temperature=comment_config.get("temperature", 0.7)
+        )
+        
+        # 创建提示模板
         self.analysis_prompt_template = PromptTemplate(
             input_variables=["proposal_title", "proposal_content"],
-            template="""
-            请对以下提案进行分析评估:
-            
-            提案标题: {proposal_title}
-            提案内容: {proposal_content}
-            
-            请分析以下方面并以JSON格式返回:
-            1. 各维度评分(1-10分):
-               - 可行性(feasibility)
-               - 相关性(relevance)
-               - 成本效益(cost_benefit)
-               - 影响力(impact)
-               - 风险(risk)
-            2. 整体评分(overall_score)
-            3. 优势(strengths)和弱点(weaknesses)
-            4. 潜在风险(risks)
-            
-            仅返回JSON格式，不要有其他文字。
-            """
+            template=ANALYSIS_TEMPLATE
         )
         
-        # 创建投票决策提示模板
         self.vote_prompt_template = PromptTemplate(
             input_variables=["analysis_result"],
-            template="""
-            根据以下提案分析结果，决定是支持(support)还是反对(oppose)该提案:
-            
-            {analysis_result}
-            
-            请以JSON格式返回你的决定，包含以下字段:
-            1. vote_type: "support"或"oppose"
-            2. reason: 决定的详细理由
-            3. confidence: 决策置信度(0-1)
-            
-            仅返回JSON格式，不要有其他文字。
-            """
+            template=VOTE_TEMPLATE
         )
         
-        # 创建评论生成提示模板
         self.comment_prompt_template = PromptTemplate(
             input_variables=["analysis_result", "sentiment"],
-            template="""
-            根据以下提案分析结果，生成一段评论:
-            
-            {analysis_result}
-            
-            评论情感倾向: {sentiment} (positive/negative/neutral)
-            
-            请以JSON格式返回评论，包含以下字段:
-            1. content: 评论正文
-            2. highlights: 提案亮点
-            3. suggestions: 改进建议
-            
-            仅返回JSON格式，不要有其他文字。
-            """
+            template=COMMENT_TEMPLATE
         )
         
         # 创建LLM链
-        self.analysis_chain = LLMChain(llm=self.llm, prompt=self.analysis_prompt_template)
-        self.vote_chain = LLMChain(llm=self.llm, prompt=self.vote_prompt_template)
-        self.comment_chain = LLMChain(llm=self.llm, prompt=self.comment_prompt_template)
+        self.analysis_chain = LLMChain(llm=self.analysis_llm, prompt=self.analysis_prompt_template)
+        self.vote_chain = LLMChain(llm=self.vote_llm, prompt=self.vote_prompt_template)
+        self.comment_chain = LLMChain(llm=self.comment_llm, prompt=self.comment_prompt_template)
     
     def analyze_proposal(self, proposal: Dict[str, Any]) -> Dict[str, Any]:
         """

@@ -1,11 +1,13 @@
 from typing import Dict, Any, Optional
 import logging
 
+# 导入项目组件
 from proposal.nlp.proposal_extractor import ProposalExtractor
 from proposal.nlp.proposal_analyzer import ProposalAnalyzer
 from proposal.nlp.proposal_formatter import ProposalFormatter
 from proposal.services.proposal_service import ProposalService
 from proposal.services.vote_service import VoteService
+from proposal.core.llm import get_chat_llm_instance
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,13 @@ class ProposalAgent:
         self.analyzer = ProposalAnalyzer(config.get("analyzer_config"))
         self.proposal_service = ProposalService()
         self.vote_service = VoteService()
+        
+        # 对话生成LLM
+        self.chat_llm = get_chat_llm_instance(
+            temperature=0.7,
+            streaming=config.get("streaming", False)
+        )
+    
     
     def process_message(self, message: str, user_id: str) -> Dict[str, Any]:
         """处理用户消息，执行相应的提案操作"""
