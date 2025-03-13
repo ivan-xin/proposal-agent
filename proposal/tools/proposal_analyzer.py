@@ -1,9 +1,22 @@
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 import os
+import logging
+from functools import lru_cache
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 from langchain.chat_models import ChatOpenAI
 import json
+
+# 导入提示词模板
+# 导入提示词模板
+from prompts.proposal_prompts import (
+    ANALYSIS_TEMPLATE,
+    VOTE_TEMPLATE,
+    COMMENT_TEMPLATE
+)
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 class ProposalAnalyzer:
     """提案分析器：分析提案内容并提供投票和评论决策支持"""
@@ -17,84 +30,98 @@ class ProposalAnalyzer:
         """
         self.config = config or {}
         self._initialize_llm()
+        # 添加结果缓存
+        self._proposal_cache = {}
         
-    def _initialize_llm(self):
+    def _initialize_llm(self) -> None:
         """初始化LLM组件和提示模板"""
         # 配置LLM
         model_name = self.config.get("model_name", "gpt-3.5-turbo")
         temperature = self.config.get("temperature", 0.0)
         api_key = self.config.get("api_key", os.getenv("OPENAI_API_KEY"))
         
+        # 使用独立配置
+        analysis_config = self.config.get("analysis", {})
+        vote_config = self.config.get("vote", {})
+        comment_config = self.config.get("comment", {})
+        
+        # 创建基础LLM
         self.llm = ChatOpenAI(
             model_name=model_name,
             temperature=temperature,
             openai_api_key=api_key
         )
         
-        # 创建提案分析提示模板
+        # 各功能可能使用不同的模型配置
+        self.analysis_llm = ChatOpenAI(
+            model_name=analysis_config.get("model_name", model_name),
+            temperature=analysis_config.get("temperature", temperature),
+            openai_api_key=api_key
+        )
+        
+        self.vote_llm = ChatOpenAI(
+            model_name=vote_config.get("model_name", model_name),
+            temperature=vote_config.get("temperature", temperature),
+            openai_api_key=api_key
+        )
+        
+        self.comment_llm = ChatOpenAI(
+            model_name=comment_config.get("model_name", model_name),
+            temperature=comment_config.get("temperature", 0.7),  # 评论可能需要更高的创造性
+            openai_api_key=api_key
+        )
+        
+        # 创建提示模板
         self.analysis_prompt_template = PromptTemplate(
             input_variables=["proposal_title", "proposal_content"],
-            template="""
-            请对以下提案进行分析评估:
-            
-            提案标题: {proposal_title}
-            提案内容: {proposal_content}
-            
-            请分析以下方面并以JSON格式返回:
-            1. 各维度评分(1-10分):
-               - 可行性(feasibility)
-               - 相关性(relevance)
-               - 成本效益(cost_benefit)
-               - 影响力(impact)
-               - 风险(risk)
-            2. 整体评分(overall_score)
-            3. 优势(strengths)和弱点(weaknesses)
-            4. 潜在风险(risks)
-            
-            仅返回JSON格式，不要有其他文字。
-            """
+            template=ANALYSIS_TEMPLATE
         )
         
-        # 创建投票决策提示模板
         self.vote_prompt_template = PromptTemplate(
             input_variables=["analysis_result"],
-            template="""
-            根据以下提案分析结果，决定是支持(support)还是反对(oppose)该提案:
-            
-            {analysis_result}
-            
-            请以JSON格式返回你的决定，包含以下字段:
-            1. vote_type: "support"或"oppose"
-            2. reason: 决定的详细理由
-            3. confidence: 决策置信度(0-1)
-            
-            仅返回JSON格式，不要有其他文字。
-            """
+            template=VOTE_TEMPLATE
         )
         
-        # 创建评论生成提示模板
         self.comment_prompt_template = PromptTemplate(
             input_variables=["analysis_result", "sentiment"],
-            template="""
-            根据以下提案分析结果，生成一段评论:
-            
-            {analysis_result}
-            
-            评论情感倾向: {sentiment} (positive/negative/neutral)
-            
-            请以JSON格式返回评论，包含以下字段:
-            1. content: 评论正文
-            2. highlights: 提案亮点
-            3. suggestions: 改进建议
-            
-            仅返回JSON格式，不要有其他文字。
-            """
+            template=COMMENT_TEMPLATE
         )
         
         # 创建LLM链
-        self.analysis_chain = LLMChain(llm=self.llm, prompt=self.analysis_prompt_template)
-        self.vote_chain = LLMChain(llm=self.llm, prompt=self.vote_prompt_template)
-        self.comment_chain = LLMChain(llm=self.llm, prompt=self.comment_prompt_template)
+        self.analysis_chain = LLMChain(llm=self.analysis_llm, prompt=self.analysis_prompt_template)
+        self.vote_chain = LLMChain(llm=self.vote_llm, prompt=self.vote_prompt_template)
+        self.comment_chain = LLMChain(llm=self.comment_llm, prompt=self.comment_prompt_template)
+    
+    @lru_cache(maxsize=100)
+    def _get_proposal_hash(self, title: str, content: str) -> str:
+        """
+        生成提案哈希用于缓存
+        
+        Args:
+            title: 提案标题
+            content: 提案内容
+            
+        Returns:
+            哈希字符串
+        """
+        import hashlib
+        # 创建提案内容的哈希，用于缓存
+        combined = f"{title}|{content}"
+        return hashlib.md5(combined.encode()).hexdigest()
+    
+    async def analyze_proposal_async(self, proposal: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        异步分析提案
+        
+        Args:
+            proposal: 提案数据字典
+            
+        Returns:
+            多维度分析结果字典
+        """
+        # 异步版本实现
+        # 这里需要使用LangChain的异步API
+        pass
     
     def analyze_proposal(self, proposal: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -111,6 +138,12 @@ class ProposalAnalyzer:
             proposal_title = proposal.get("title", "")
             proposal_content = proposal.get("content", "")
             
+            # 检查缓存
+            proposal_hash = self._get_proposal_hash(proposal_title, proposal_content)
+            if proposal_hash in self._proposal_cache:
+                logger.info(f"使用缓存的提案分析结果: {proposal_hash}")
+                return self._proposal_cache[proposal_hash]
+            
             # 运行分析链
             response = self.analysis_chain.run(
                 proposal_title=proposal_title,
@@ -119,10 +152,13 @@ class ProposalAnalyzer:
             
             # 解析JSON结果
             analysis_result = json.loads(response)
+            
+            # 存入缓存
+            self._proposal_cache[proposal_hash] = analysis_result
             return analysis_result
             
         except Exception as e:
-            print(f"提案分析错误: {str(e)}")
+            logger.error(f"提案分析错误: {str(e)}", exc_info=True)
             return {
                 "feasibility": 5,
                 "relevance": 5,
@@ -156,15 +192,18 @@ class ProposalAnalyzer:
             return vote_decision
         
         except Exception as e:
-            print(f"投票决策错误: {str(e)}")
+            logger.error(f"投票决策错误: {str(e)}", exc_info=True)
+            # 基于整体分数提供默认决策
+            threshold = self.config.get("vote_threshold", 6.0)
             return {
-                "vote_type": "oppose" if analysis_result.get("overall_score", 5) < 6 else "support",
+                "vote_type": "oppose" if analysis_result.get("overall_score", 5) < threshold else "support",
                 "reason": "由于技术问题，无法生成详细理由",
                 "confidence": 0.5
             }
     
-    def generate_comment(self, analysis_result: Dict[str, Any], 
-                       sentiment: str = "neutral") -> Dict[str, Any]:
+    def generate_comment(self, 
+                         analysis_result: Dict[str, Any], 
+                         sentiment: str = "neutral") -> Dict[str, Any]:
         """
         基于分析结果生成评论
         
@@ -176,6 +215,12 @@ class ProposalAnalyzer:
             包含评论内容的字典
         """
         try:
+            # 验证情感类型
+            valid_sentiments = ["positive", "negative", "neutral"]
+            if sentiment.lower() not in valid_sentiments:
+                logger.warning(f"无效的情感类型: {sentiment}，使用neutral替代")
+                sentiment = "neutral"
+                
             # 将分析结果转为字符串
             analysis_str = json.dumps(analysis_result, ensure_ascii=False)
             
@@ -190,7 +235,7 @@ class ProposalAnalyzer:
             return comment_content
         
         except Exception as e:
-            print(f"评论生成错误: {str(e)}")
+            logger.error(f"评论生成错误: {str(e)}", exc_info=True)
             return {
                 "content": "这个提案有一些优点和需要改进的地方。",
                 "highlights": ["提案内容完整"],

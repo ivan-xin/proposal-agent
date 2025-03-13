@@ -1,155 +1,144 @@
 from langchain.tools import BaseTool
-from langchain_core.prompts import PromptTemplate
 from typing import Dict, List, Optional, Any
 import json
 
-from app.config import settings
-from app.core.llm import get_chat_llm_instance
-from app.plugins.proposal_plugin.models.proposal import ProposalManager
-
-# 全局提案管理器
-proposal_manager = ProposalManager()
-
-# 提案评估提示
-PROPOSAL_ANALYSIS_PROMPT = """
-你需要评估一个社区治理提案，并决定是支持还是反对。保持客观理性，既关注社区利益也关注个人权益。
-
-提案标题: {title}
-提案内容: {description}
-
-请分析这个提案:
-1. 提案的目的和潜在影响
-2. 提案的优点和缺点
-3. 考虑提案对不同群体的影响
-4. 提案是否符合基本伦理和价值观
-
-最后，明确给出你的投票决定(支持或反对)并解释理由。
-
-你的分析:
-"""
+from proposal.services.proposal_service import ProposalService
+from proposal.nlp.proposal_analyzer import ProposalAnalyzer
 
 class ProposalTool(BaseTool):
     name: str = "proposal_tool"
-    description: str = "管理社区治理提案和投票。可用于创建提案、查看提案、进行投票和获取结果。"
+    description: str = "管理社区治理提案和投票。可用于创建提案、查看提案、进行投票和分析提案。"
+    
+    def __init__(self):
+        """初始化提案工具，设置所需服务"""
+        super().__init__()
+        self.proposal_service = ProposalService()
+        self.proposal_analyzer = ProposalAnalyzer()
     
     def _run(self, action: str, **kwargs: Any) -> str:
         """
-        运行提案工具
+        执行提案工具操作
         
         Args:
-            action: 要执行的操作，可以是 'create', 'list', 'view', 'vote', 'analyze'
-            **kwargs: 其他参数
+            action: 要执行的操作 ('create', 'list', 'view', 'vote', 'analyze')
+            **kwargs: 操作所需参数
+        
+        Returns:
+            字符串形式的操作结果
         """
-        if action == "create":
-            title = kwargs.get("title", "")
-            description = kwargs.get("description", "")
-            
-            if not title or not description:
-                return "创建提案失败：标题和描述不能为空"
-            
-            proposal = proposal_manager.create_proposal(title, description)
-            
-            return f"""已创建提案 #{proposal.proposal_id}
-            
-                    标题: {proposal.title}
-
-                    内容: {proposal.description}
-
-                    用户可以使用"支持"或"反对"进行投票。
-                    """
-            
-        elif action == "list":
-            status = kwargs.get("status")
-            
-            proposals = proposal_manager.list_proposals(status)
-            
-            if not proposals:
-                return "当前没有提案"
-            
-            proposals_text = "\n\n".join([
-                f"#{p['proposal_id']} - {p['title']} (状态: {p['status']}, 投票数: {p['vote_count']})"
-                for p in proposals
-            ])
-            
-            return f"提案列表:\n\n{proposals_text}"
-            
-        elif action == "view":
-            proposal_id = kwargs.get("proposal_id", "")
-            
-            if not proposal_id:
-                return "查看提案失败：缺少提案ID"
-            
-            proposal = proposal_manager.get_proposal(proposal_id)
-            if not proposal:
-                return f"查看提案失败：找不到ID为 {proposal_id} 的提案"
-            
-            results = proposal.get_results()
-            
-            return f"""提案 #{results['proposal_id']}
-            
-                    标题: {results['title']}
-
-                    内容: {results['description']}
-
-                    投票情况:
-                    - 支持: {results['votes']['support']} ({results['support_percentage']:.1f}%)
-                    - 反对: {results['votes']['oppose']} ({results['oppose_percentage']:.1f}%)
-
-                    总投票数: {results['total_votes']}
-                    状态: {results['status']}
-                    """
-            
-        elif action == "vote":
-            proposal_id = kwargs.get("proposal_id", "")
-            voter_id = kwargs.get("voter_id", "default_user")
-            vote = kwargs.get("vote", "").lower()
-            
-            if not proposal_id or not vote:
-                return "投票失败：缺少提案ID或投票选项"
-            
-            # 标准化投票选项
-            if vote in ["支持", "赞成", "同意", "yes", "support"]:
-                vote = "support"
-            elif vote in ["反对", "不赞成", "不同意", "no", "oppose"]:
-                vote = "oppose"
-            else:
-                return f"投票失败：'{vote}' 不是有效的投票选项，请使用'支持'或'反对'"
-            
-            proposal = proposal_manager.get_proposal(proposal_id)
-            if not proposal:
-                return f"投票失败：找不到ID为 {proposal_id} 的提案"
-            
-            success = proposal.add_vote(voter_id, vote)
-            if not success:
-                return "投票失败：您可能已经投过票或提案已关闭"
-            
-            return f"您已成功对提案 #{proposal_id} 投票: {vote}"
-            
-        elif action == "analyze":
-            proposal_id = kwargs.get("proposal_id", "")
-            
-            if not proposal_id:
-                return "分析提案失败：缺少提案ID"
-            
-            proposal = proposal_manager.get_proposal(proposal_id)
-            if not proposal:
-                return f"分析提案失败：找不到ID为 {proposal_id} 的提案"
-            
-            # 使用LLM进行分析
-            prompt = PromptTemplate(
-                template=PROPOSAL_ANALYSIS_PROMPT,
-                input_variables=["title", "description"]
-            )
-            
-            llm = get_chat_llm_instance(temperature=0.3)
-            analysis_prompt = prompt.format(
-                title=proposal.title,
-                description=proposal.description
-            )
-            
-            analysis_result = ""
-            
-            return f"提案 #{proposal_id} 的分析:\n\n{analysis_result.content}"
-            
+        actions = {
+            "create": self._create_proposal,
+            "list": self._list_proposals,
+            "view": self._view_proposal,
+            "vote": self._vote_proposal,
+            "analyze": self._analyze_proposal
+        }
+        
+        if action in actions:
+            return actions[action](**kwargs)
         else:
             return f"未知操作：{action}。支持的操作有：create, list, view, vote, analyze。"
+    
+    def _create_proposal(self, title: str = "", description: str = "", **kwargs) -> str:
+        """创建新提案"""
+        if not title or not description:
+            return "创建提案失败：标题和描述不能为空"
+        
+        proposal = self.proposal_service.create_proposal(title, description)
+        
+        return f"""已创建提案 #{proposal['proposal_id']}
+        
+                标题: {proposal['title']}
+
+                内容: {proposal['description']}
+
+                用户可以使用"支持"或"反对"进行投票。
+                        """
+    
+    def _list_proposals(self, status: str = None, **kwargs) -> str:
+        """列出所有提案或指定状态的提案"""
+        proposals = self.proposal_service.list_proposals(status)
+        
+        if not proposals:
+            return "当前没有提案"
+        
+        proposals_text = "\n\n".join([
+            f"#{p['proposal_id']} - {p['title']} (状态: {p['status']}, 投票数: {p['vote_count']})"
+            for p in proposals
+        ])
+        
+        return f"提案列表:\n\n{proposals_text}"
+    
+    def _view_proposal(self, proposal_id: str = "", **kwargs) -> str:
+        """查看特定提案详情"""
+        if not proposal_id:
+            return "查看提案失败：缺少提案ID"
+        
+        proposal = self.proposal_service.get_proposal(proposal_id)
+        if not proposal:
+            return f"查看提案失败：找不到ID为 {proposal_id} 的提案"
+        
+        results = proposal.get('results', {})
+        
+        return f"""提案 #{proposal_id}
+        
+                标题: {proposal['title']}
+
+                内容: {proposal['description']}
+
+                投票情况:
+                - 支持: {results.get('votes', {}).get('support', 0)} ({results.get('support_percentage', 0):.1f}%)
+                - 反对: {results.get('votes', {}).get('oppose', 0)} ({results.get('oppose_percentage', 0):.1f}%)
+
+                总投票数: {results.get('total_votes', 0)}
+                状态: {proposal['status']}
+            """
+    
+    def _vote_proposal(self, proposal_id: str = "", voter_id: str = "default_user", 
+                      vote: str = "", **kwargs) -> str:
+        """对提案进行投票"""
+        if not proposal_id or not vote:
+            return "投票失败：缺少提案ID或投票选项"
+        
+        # 标准化投票选项
+        vote_map = {
+            "支持": "support", "赞成": "support", "同意": "support", "yes": "support", "support": "support",
+            "反对": "oppose", "不赞成": "oppose", "不同意": "oppose", "no": "oppose", "oppose": "oppose"
+        }
+        
+        normalized_vote = vote_map.get(vote.lower())
+        if not normalized_vote:
+            return f"投票失败：'{vote}' 不是有效的投票选项，请使用'支持'或'反对'"
+        
+        success = self.proposal_service.add_vote(proposal_id, voter_id, normalized_vote)
+        if not success:
+            return "投票失败：您可能已经投过票或提案已关闭"
+        
+        return f"您已成功对提案 #{proposal_id} 投票: {normalized_vote}"
+    
+    def _analyze_proposal(self, proposal_id: str = "", **kwargs) -> str:
+        """分析提案并提供建议"""
+        if not proposal_id:
+            return "分析提案失败：缺少提案ID"
+        
+        proposal = self.proposal_service.get_proposal(proposal_id)
+        if not proposal:
+            return f"分析提案失败：找不到ID为 {proposal_id} 的提案"
+        
+        # 使用专门的分析器
+        analysis_result = self.proposal_analyzer.analyze_proposal(proposal)
+        vote_decision = self.proposal_analyzer.generate_vote_decision(analysis_result)
+        
+        return f"""提案 #{proposal_id} 的分析:
+
+                    总体评分: {analysis_result.get('overall_score', 5)}/10
+
+                    优势:
+                    - {'\n- '.join(analysis_result.get('strengths', ['未找到明显优势']))}
+
+                    弱点:
+                    - {'\n- '.join(analysis_result.get('weaknesses', ['未找到明显弱点']))}
+
+                    建议投票: {vote_decision.get('vote_type', '未决定')}
+                    理由: {vote_decision.get('reason', '无详细理由')}
+                """
