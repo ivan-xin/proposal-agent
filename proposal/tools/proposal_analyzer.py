@@ -1,13 +1,15 @@
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List
 import os
 import logging
 from functools import lru_cache
-from langchain.chains import LLMChain
-from langchain.prompts import PromptTemplate
-from langchain.chat_models import ChatOpenAI
 import json
 
-# 导入提示词模板
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+
+# 修改导入以使用项目的LLM工厂函数
+from proposal.core.llm import get_chat_llm_instance
+
 # 导入提示词模板
 from prompts.proposal_prompts import (
     ANALYSIS_TEMPLATE,
@@ -15,60 +17,38 @@ from prompts.proposal_prompts import (
     COMMENT_TEMPLATE
 )
 
-# 配置日志
 logger = logging.getLogger(__name__)
 
 class ProposalAnalyzer:
     """提案分析器：分析提案内容并提供投票和评论决策支持"""
     
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        """
-        初始化提案分析器
-        
-        Args:
-            config: 配置字典，包含模型设置、API密钥等
-        """
+        """初始化提案分析器"""
         self.config = config or {}
         self._initialize_llm()
-        # 添加结果缓存
         self._proposal_cache = {}
         
     def _initialize_llm(self) -> None:
         """初始化LLM组件和提示模板"""
-        # 配置LLM
-        model_name = self.config.get("model_name", "gpt-3.5-turbo")
-        temperature = self.config.get("temperature", 0.0)
-        api_key = self.config.get("api_key", os.getenv("OPENAI_API_KEY"))
-        
-        # 使用独立配置
+        # 配置参数
         analysis_config = self.config.get("analysis", {})
         vote_config = self.config.get("vote", {})
         comment_config = self.config.get("comment", {})
         
-        # 创建基础LLM
-        self.llm = ChatOpenAI(
-            model_name=model_name,
-            temperature=temperature,
-            openai_api_key=api_key
+        # 使用工厂函数创建LLM实例
+        self.analysis_llm = get_chat_llm_instance(
+            model_name=analysis_config.get("model_name"),
+            temperature=analysis_config.get("temperature", 0.0)
         )
         
-        # 各功能可能使用不同的模型配置
-        self.analysis_llm = ChatOpenAI(
-            model_name=analysis_config.get("model_name", model_name),
-            temperature=analysis_config.get("temperature", temperature),
-            openai_api_key=api_key
+        self.vote_llm = get_chat_llm_instance(
+            model_name=vote_config.get("model_name"),
+            temperature=vote_config.get("temperature", 0.0)
         )
         
-        self.vote_llm = ChatOpenAI(
-            model_name=vote_config.get("model_name", model_name),
-            temperature=vote_config.get("temperature", temperature),
-            openai_api_key=api_key
-        )
-        
-        self.comment_llm = ChatOpenAI(
-            model_name=comment_config.get("model_name", model_name),
-            temperature=comment_config.get("temperature", 0.7),  # 评论可能需要更高的创造性
-            openai_api_key=api_key
+        self.comment_llm = get_chat_llm_instance(
+            model_name=comment_config.get("model_name"),
+            temperature=comment_config.get("temperature", 0.7)
         )
         
         # 创建提示模板
@@ -91,7 +71,6 @@ class ProposalAnalyzer:
         self.analysis_chain = LLMChain(llm=self.analysis_llm, prompt=self.analysis_prompt_template)
         self.vote_chain = LLMChain(llm=self.vote_llm, prompt=self.vote_prompt_template)
         self.comment_chain = LLMChain(llm=self.comment_llm, prompt=self.comment_prompt_template)
-    
     @lru_cache(maxsize=100)
     def _get_proposal_hash(self, title: str, content: str) -> str:
         """
